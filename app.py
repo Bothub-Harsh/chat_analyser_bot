@@ -684,23 +684,37 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not question:
         return
 
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action=ChatAction.TYPING,
-    )
-    waiting = await update.message.reply_text("Thinking… checking your selected group messages.")
+    async def keep_typing():
+        # Telegram's native animated typing indicator expires after a few seconds.
+        # Refresh it until the AI response is ready.
+        while True:
+            try:
+                await context.bot.send_chat_action(
+                    chat_id=update.effective_chat.id,
+                    action=ChatAction.TYPING,
+                )
+            except Exception:
+                log.debug("Could not refresh Telegram typing indicator", exc_info=True)
+            await asyncio.sleep(4)
+
+    typing_task = asyncio.create_task(keep_typing())
     try:
         answer = await answer_question(update.effective_user.id, question)
         await save_chat_turn(update.effective_user.id, "user", question)
         await save_chat_turn(update.effective_user.id, "assistant", answer)
-        await waiting.delete()
         await reply_long(update.message, answer)
     except Exception as exc:
         log.exception("AI answer failed")
-        await waiting.edit_text(
+        await update.message.reply_text(
             "I couldn't generate an answer. Check the Render logs for the exact error, "
             f"then try again. (Error: {str(exc)[:220]})"
         )
+    finally:
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
 
 
 async def generate_session():
