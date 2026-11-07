@@ -98,7 +98,12 @@ SESSION_STRING = os.getenv("TELEGRAM_SESSION", "").strip()
 STORAGE_CHANNEL = os.getenv("STORAGE_CHANNEL", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 ADMIN_USER_ID = os.getenv("ADMIN_USER_ID", "").strip()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+# Groq retired llama-3.3-70b-versatile for developer-tier accounts.
+# Automatically migrate the old Render environment value to its recommended replacement.
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
+if GROQ_MODEL == "llama-3.3-70b-versatile":
+    log.warning("GROQ_MODEL is retired; automatically switching to openai/gpt-oss-120b")
+    GROQ_MODEL = "openai/gpt-oss-120b"
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Kolkata").strip()
 MAX_STORAGE_SCAN = int(os.getenv("MAX_STORAGE_SCAN", "2500"))
 MAX_SYNC_PER_GROUP = int(os.getenv("MAX_SYNC_PER_GROUP", "300"))
