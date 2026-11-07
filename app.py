@@ -561,6 +561,52 @@ async def list_dialogs():
         await client.disconnect()
 
 
+async def resolve_storage_entity(client, configured_value):
+    """
+    Resolve a private storage channel from the signed-in user's dialogs.
+
+    Telethon needs an access hash for private channels. A bare positive
+    channel ID is not enough, and get_entity(positive_number) can be
+    interpreted as a user ID. Dialogs provide the cached entity/access hash.
+    """
+    value = str(configured_value).strip()
+
+    # A username or t.me-style public identifier can be resolved directly.
+    if not value.lstrip("-").isdigit():
+        try:
+            entity = await client.get_entity(value)
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not resolve STORAGE_CHANNEL. Check its @username or "
+                "invite/access and make sure the Telethon personal account joined it."
+            ) from exc
+        if not getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False):
+            raise RuntimeError("STORAGE_CHANNEL resolved, but it is not a Telegram channel or supergroup.")
+        return entity
+
+    configured_id = int(value)
+    raw_id = abs(configured_id)
+
+    # Search dialogs so Telethon can use the channel's cached access hash.
+    async for dialog in client.iter_dialogs():
+        entity = dialog.entity
+        if not (dialog.is_channel or dialog.is_group):
+            continue
+
+        dialog_id = int(dialog.id)
+        entity_id = int(getattr(entity, "id", 0) or 0)
+        if dialog_id == configured_id or entity_id == raw_id:
+            log.info("Resolved storage channel from Telegram dialogs: %s (ID %s)", dialog.name, dialog_id)
+            return entity
+
+    raise RuntimeError(
+        f"STORAGE_CHANNEL '{value}' was not found in the personal Telegram account's dialogs. "
+        "Join the private storage channel with the same personal account used for TELEGRAM_SESSION, "
+        "give that account permission to post, then set STORAGE_CHANNEL to the channel ID printed "
+        "by 'python app.py --list-dialogs' (usually a -100... ID). Do not use the bot's user ID."
+    )
+
+
 async def run_app():
     global telethon_client, storage_entity, groq_client
 
@@ -583,9 +629,7 @@ async def run_app():
         API_HASH,
     )
     await telethon_client.start()
-    storage_entity = await telethon_client.get_entity(
-        int(STORAGE_CHANNEL) if STORAGE_CHANNEL.lstrip("-").isdigit() else STORAGE_CHANNEL
-    )
+    storage_entity = await resolve_storage_entity(telethon_client, STORAGE_CHANNEL)
     groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 
     await load_known_keys()
