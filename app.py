@@ -76,7 +76,7 @@ from groq import AsyncGroq
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -853,6 +853,18 @@ async def run_app():
     bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message))
 
     await bot.initialize()
+    # Register commands with Telegram so they appear when the user types "/".
+    await bot.bot.set_my_commands([
+        BotCommand("start", "Resume the bot"),
+        BotCommand("stop", "Pause monitoring and AI replies"),
+        BotCommand("help", "Show available commands"),
+        BotCommand("status", "Check whether the bot is running"),
+        BotCommand("groups", "List groups available to add"),
+        BotCommand("addgroup", "Add a group: /addgroup GROUP_ID"),
+        BotCommand("removegroup", "Remove a selected group: /removegroup GROUP_ID"),
+        BotCommand("mygroups", "Show your selected groups"),
+        BotCommand("sync", "Import recent messages: /sync 1"),
+    ])
     await bot.start()
     await bot.updater.start_polling(drop_pending_updates=True)
 
