@@ -413,6 +413,7 @@ def choose_relevant_records(records, question, max_items=65):
     today = now_local().date()
     wants_today = any(x in q for x in ("today", "this morning", "tonight", "aaj"))
     wants_yesterday = "yesterday" in q
+    is_summary = any(x in q for x in ("summary", "summarize", "what happened", "what's going on", "whats going on", "catch me up", "group update"))
     yesterday = today - timedelta(days=1)
 
     pool = []
@@ -432,19 +433,25 @@ def choose_relevant_records(records, question, max_items=65):
         score = overlap * 4
         if d == today:
             score += 2
-        if not words or q.strip() in ("what happened", "summary", "summarize"):
+        if is_summary:
+            # A summary should sample the selected group's conversation, not keyword-match "summary".
+            score += 1
+        elif not words:
             score += 1
         pool.append((score, rec))
 
     if not pool and (wants_today or wants_yesterday):
         return []
-    if words:
+    if words and not is_summary:
         matched = [x for x in pool if x[0] > 2]
         if matched:
             pool = matched
 
-    # Keep most recent records while allowing relevance to influence ordering.
-    pool.sort(key=lambda x: (x[0], x[1].get("date", "")), reverse=True)
+    # Keep a broad chronological sample for summaries; relevance ranking is for targeted questions only.
+    if is_summary:
+        pool.sort(key=lambda x: x[1].get("date", ""), reverse=True)
+    else:
+        pool.sort(key=lambda x: (x[0], x[1].get("date", "")), reverse=True)
     selected = [r for _, r in pool[:max_items]]
     selected.sort(key=lambda r: r.get("date", ""))
     return selected
@@ -506,7 +513,15 @@ async def answer_question(user_id, question):
             "do not confuse number of messages with number of people. For questions asking how many messages contain a word, "
             "count matching messages only if the supplied context is sufficient; otherwise explain the limitation. "
             "Never invent numbers. State the scope briefly and plainly, without awkward disclaimers. "
-            "Keep simple answers to 1-3 short sentences. Use a few bullets only when listing multiple useful points. "
+            "For ordinary simple questions, keep answers to 1-3 short sentences. HOWEVER, when the user asks for a group/chat summary, "
+            "write a genuinely useful conversation digest, not a generic one-paragraph overview. Organize it with short readable headings: "
+            "🔥 Main conversations, 👥 People and interactions, 💡 Useful or notable information, and 📌 Overall picture. "
+            "Include the actual topics being discussed, what people said about them, and how replies connect. Name participants only when "
+            "their names are in the records, and attach clickable profile mentions when sender IDs are available. Include a few short exact "
+            "message fragments only when they clarify the discussion. Distinguish real discussion from greetings, spam, bot messages, and "
+            "media-only posts. Do not call something suspicious, risky, important, or a claim unless the messages clearly support that wording. "
+            "Avoid vague filler such as 'mixed-topic group', 'random chatter', or 'there is no single topic'. Mention the sample size and "
+            "time range only when they are known from the supplied records. Be informative but concise: usually 4-7 bullets across sections. "
             "For a conversation question, explain who said what in a natural way. For a follow-up, use recent chat history "
             "to understand references such as he, she, they, that, and why. "
             "Use occasional relevant emojis, not one on every line. Emphasize only key words or the answer; do not use "
