@@ -142,7 +142,7 @@ def format_ai_for_telegram(text):
         display_name = html.escape(match.group(2), quote=False)
         return f'<a href="tg://user?id={user_id}">{display_name}</a>'
 
-    value = re.sub(r"\\[\\[user:(\\d+)\\|([^\\]\\n]+)\\]\\]", user_link, value)
+    value = re.sub(r"\[\[user:(\d+)\|([^\n]+?)\]\]", user_link, value)
 
     # Convert bold first, then simple italic and inline code.
     value = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", value, flags=re.DOTALL)
