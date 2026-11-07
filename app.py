@@ -132,20 +132,21 @@ def is_admin(update: Update) -> bool:
 
 
 def format_ai_for_telegram(text):
-    """Convert common Markdown emphasis to Telegram HTML and remove stray markers."""
+    """Convert common Markdown emphasis to safe Telegram HTML."""
     import html
-    value = (text or "").strip()
-    # Escape raw HTML first; then add only the formatting tags we intentionally support.
-    value = html.escape(value, quote=False)
-    value = re.sub(r"\\*\\*(.+?)\\*\\*", r"<b>\\1</b>", value, flags=re.DOTALL)
-    value = re.sub(r"(?<!\\*)\\*([^*\\n]+)\\*(?!\\*)", r"<i>\\1</i>", value)
-    value = re.sub(r"__([^_\\n]+)__", r"<b>\\1</b>", value)
-    value = re.sub(r"(?<!_)_([^_\\n]+)_(?!_)", r"<i>\\1</i>", value)
-    value = re.sub(r"`([^`\\n]+)`", r"<code>\\1</code>", value)
-    value = re.sub(r"(?m)^\\s*[-*]\\s+", "• ", value)
+    value = html.escape((text or "").strip(), quote=False)
+
+    # Convert bold first, then simple italic and inline code.
+    value = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", value, flags=re.DOTALL)
+    value = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", value)
+    value = re.sub(r"\*([^*\n]+)\*", r"<i>\1</i>", value)
+    value = re.sub(r"__([^_\n]+)__", r"<b>\1</b>", value)
+    value = re.sub(r"_([^_\n]+)_", r"<i>\1</i>", value)
+
+    # Convert Markdown bullet markers without look-behind expressions.
+    value = re.sub(r"(?m)^\s*[-*]\s+", "• ", value)
     value = value.replace("**", "").replace("__", "")
     return value
-
 
 async def reply_long(message, text):
     """Send readable Telegram HTML with safe plain-text fallback."""
