@@ -629,16 +629,18 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id=update.effective_chat.id,
         action=ChatAction.TYPING,
     )
+    waiting = await update.message.reply_text("Thinking… checking your selected group messages.")
     try:
         answer = await answer_question(update.effective_user.id, question)
         await save_chat_turn(update.effective_user.id, "user", question)
         await save_chat_turn(update.effective_user.id, "assistant", answer)
+        await waiting.delete()
         await reply_long(update.message, answer)
     except Exception as exc:
         log.exception("AI answer failed")
-        await update.message.reply_text(
-            "I hit a problem while answering. Please try again in a moment. "
-            f"(Technical detail: {str(exc)[:180]})"
+        await waiting.edit_text(
+            "I couldn't generate an answer. Check the Render logs for the exact error, "
+            f"then try again. (Error: {str(exc)[:220]})"
         )
 
 
@@ -747,7 +749,7 @@ async def run_app():
     # Collect only messages from the selected-group allow-list.
     telethon_client.add_event_handler(collect_group_message, events.NewMessage(incoming=True))
 
-    bot = Application.builder().token(BOT_TOKEN).build()
+    bot = Application.builder().token(BOT_TOKEN).concurrent_updates(4).build()
     bot.add_handler(CommandHandler("start", start_command))
     bot.add_handler(CommandHandler("help", help_command))
     bot.add_handler(CommandHandler("status", status_command))
