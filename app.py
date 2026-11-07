@@ -556,7 +556,34 @@ async def answer_question(user_id, question):
         temperature=0.3,
         max_tokens=1400,
     )
-    return completion.choices[0].message.content.strip()
+    answer = completion.choices[0].message.content.strip()
+
+    # Make every unambiguous sender name in the answer clickable using the
+    # exact numeric Telegram ID saved with the selected group's messages.
+    sender_ids_by_name = {}
+    ambiguous_names = set()
+    for record in relevant:
+        name = (record.get("sender") or "").strip()
+        sender_id = str(record.get("sender_id") or "").strip()
+        if not name or not sender_id.isdigit() or name == "Unknown":
+            continue
+        if name in sender_ids_by_name and sender_ids_by_name[name] != sender_id:
+            ambiguous_names.add(name)
+        else:
+            sender_ids_by_name[name] = sender_id
+
+    for name in sorted(sender_ids_by_name, key=len, reverse=True):
+        if name in ambiguous_names or not name:
+            continue
+        # Don't double-wrap model-generated profile tokens.
+        pattern = r"(?<![\\w])" + re.escape(name) + r"(?![\\w])"
+        answer = re.sub(
+            pattern,
+            lambda match, uid=sender_ids_by_name[name], label=name:
+                f"[[user:{uid}|{label}]]",
+            answer,
+        )
+    return answer
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
