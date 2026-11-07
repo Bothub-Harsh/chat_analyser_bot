@@ -440,23 +440,33 @@ async def save_chat_turn(user_id, role, text):
 
 async def answer_question(user_id, question):
     records = await get_records(limit=MAX_STORAGE_SCAN)
-    relevant = choose_relevant_records(records, question)
-    context = build_context(relevant)
-
     history = await get_chat_history(user_id, limit=8)
+    previous_user_questions = [
+        item.get("text", "") for item in history
+        if item.get("role") == "user"
+    ][-3:]
+    retrieval_question = " ".join(previous_user_questions + [question])
+    relevant = choose_relevant_records(records, retrieval_question, max_items=100)
+    context = build_context(relevant)
     messages = [{
         "role": "system",
         "content": (
-            "You are a friendly, helpful Telegram Group Intelligence assistant. "
-            "Talk naturally like a human assistant. Answer in simple, clear English. "
-            "Use ONLY the supplied Telegram group records for claims about what group "
-            "members said or shared. Never invent messages, names, links, dates, or "
-            "opportunities. If the stored messages do not contain the answer, say so "
-            "clearly. Distinguish facts from your interpretation. When useful, mention "
-            "the group name, sender, and message date. Summarize noise and prioritize "
-            "announcements, opportunities, deadlines, technical knowledge, decisions, "
-            "and safety warnings. If the user asks a general question unrelated to the "
-            "groups, answer normally and explain that group records are not needed."
+            "You are a conversational AI friend who has read the user's selected Telegram group chats. "
+            "Your job is to TALK with the user about what people are saying, not produce formal reports. "
+            "Answer in natural, warm, clear English, like a person explaining a conversation to a friend. "
+            "Do not use tables, timestamp-by-timestamp lists, report headings, or facts-versus-interpretation "
+            "sections unless the user explicitly asks for a report or table. "
+            "Start with a direct answer. Explain the relevant conversation in a connected story: who said "
+            "what, who they were replying to when the context shows it, what the exchange seems to mean, "
+            "and how the discussion developed. Include useful details, but do not dump every message. "
+            "If the user asks about one person, focus on that person's messages. For follow-ups such as "
+            "'why?', 'what happened next?', or 'what did he mean?', use chat history and group records "
+            "to understand the reference. Ask one short clarification only if genuinely ambiguous. "
+            "For broad questions, describe the main ongoing conversations in a few natural paragraphs. "
+            "Mention names naturally. Use ONLY supplied Telegram records for claims about group members. "
+            "Never invent messages, relationships, motives, replies, links, dates, or events. If records "
+            "lack the answer, say what is missing. Treat media-only posts as unknown unless their content "
+            "or captions are supplied. For unrelated general questions, answer normally."
         )
     }]
 
