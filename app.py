@@ -136,6 +136,14 @@ def format_ai_for_telegram(text):
     import html
     value = html.escape((text or "").strip(), quote=False)
 
+    # Turn verified model tokens into clickable Telegram user profile mentions.
+    def user_link(match):
+        user_id = match.group(1)
+        display_name = html.escape(match.group(2), quote=False)
+        return f'<a href="tg://user?id={user_id}">{display_name}</a>'
+
+    value = re.sub(r"\\[\\[user:(\\d+)\\|([^\\]\\n]+)\\]\\]", user_link, value)
+
     # Convert bold first, then simple italic and inline code.
     value = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", value, flags=re.DOTALL)
     value = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", value)
@@ -447,7 +455,8 @@ def build_context(records):
     for r in records:
         line = (
             f"[{r.get('date','')}] Group: {r.get('group','?')} | "
-            f"Sender: {r.get('sender','?')} | Message: {r.get('text','')}"
+            f"Sender: {r.get('sender','?')} | Sender Telegram user ID: {r.get('sender_id') or 'not available'} | "
+            f"Message ID: {r.get('message_id') or 'not available'} | Message: {r.get('text','')}"
         )
         chunks.append(line[:1800])
     context = "\n".join(chunks)
@@ -503,7 +512,12 @@ async def answer_question(user_id, question):
             "Use occasional relevant emojis, not one on every line. Emphasize only key words or the answer; do not use "
             "asterisks, Markdown headings, or Markdown formatting. Write plain text and use simple bold/italic only if supported. "
             "Use ONLY the supplied group records for claims about members and messages. Never invent identities, relationships, "
-            "motives, replies, dates, or events. Treat media-only posts as unknown. For unrelated general questions, answer normally."
+            "motives, replies, dates, or events. Treat media-only posts as unknown. "
+            "Each record may include a Telegram user ID. When identifying or discussing a specific person, include a clickable "
+            "Telegram profile mention using exactly this token format: [[user:NUMERIC_ID|Display Name]]. Use only the exact "
+            "numeric sender ID supplied in the records; never guess or fabricate an ID. If no ID is available, use the person's "
+            "display name without a link. When the user asks for a person's ID, show the exact ID. "
+            "For lists of people, link each person when an ID is available. For unrelated general questions, answer normally."
         )
     }]
 
