@@ -108,6 +108,7 @@ telethon_client = None
 storage_entity = None
 groq_client = None
 known_keys = set()
+selected_groups = {}
 storage_lock = asyncio.Lock()
 
 
@@ -134,7 +135,7 @@ async def reply_long(message, text):
 def parse_storage_record(raw):
     try:
         data = json.loads(raw)
-        if isinstance(data, dict) and data.get("kind") in ("group_message", "chat"):
+        if isinstance(data, dict) and data.get("kind") in ("group_message", "chat", "group_config_add", "group_config_remove"):
             return data
     except Exception:
         pass
@@ -191,12 +192,16 @@ async def collect_group_message(event):
         if getattr(chat, "id", None) == getattr(storage_entity, "id", None):
             return
 
+        from telethon.utils import get_peer_id
+        chat_id = str(get_peer_id(chat))
+        if chat_id not in selected_groups:
+            return
+
         msg = event.message
         text = (msg.message or "").strip()
         if not text and not msg.media:
             return
 
-        chat_id = str(event.chat_id)
         message_id = int(msg.id)
         sender_id = str(msg.sender_id or "")
         group_title = getattr(chat, "title", None) or "Telegram group"
@@ -247,6 +252,97 @@ async def get_records(limit=None):
     return records
 
 
+async def load_selected_groups():
+    """Restore the selected-group allow-list from saved config records."""
+    selected_groups.clear()
+    changes = []
+    async for msg in telethon_client.iter_messages(storage_entity, limit=MAX_STORAGE_SCAN):
+        rec = parse_storage_record(msg.raw_text or "")
+        if rec and rec.get("kind") in ("group_config_add", "group_config_remove"):
+            changes.append(rec)
+    for rec in reversed(changes):
+        gid = str(rec.get("group_id", ""))
+        if not gid:
+            continue
+        if rec["kind"] == "group_config_add":
+            selected_groups[gid] = rec.get("group", "Telegram group")
+        else:
+            selected_groups.pop(gid, None)
+    log.info("Restored %s monitored groups", len(selected_groups))
+
+
+async def resolve_group_argument(value):
+    """Resolve a group ID or public @username using the logged-in user account."""
+    value = value.strip()
+    if value.startswith("https://t.me/"):
+        value = value.rstrip("/").split("/")[-1]
+    if value.startswith("@") or not value.lstrip("-").isdigit():
+        try:
+            entity = await telethon_client.get_entity(value)
+            if getattr(entity, "megagroup", False) or getattr(entity, "gigagroup", False):
+                return entity
+        except Exception:
+            pass
+    if value.lstrip("-").isdigit():
+        wanted = int(value)
+        async for dialog in telethon_client.iter_dialogs():
+            if dialog.is_group or dialog.is_channel:
+                from telethon.utils import get_peer_id
+                if str(get_peer_id(dialog.entity)) == str(wanted) or int(getattr(dialog.entity, "id", 0) or 0) == abs(wanted):
+                    return dialog.entity
+    return None
+
+
+async def addgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /addgroup GROUP_ID\nFirst run /groups and copy the group's ID.")
+        return
+    entity = await resolve_group_argument(" ".join(context.args))
+    if not entity or not (getattr(entity, "megagroup", False) or getattr(entity, "gigagroup", False)):
+        await update.message.reply_text("Group not found. Ensure your personal Telegram account has joined it, then copy its ID from /groups.")
+        return
+    from telethon.utils import get_peer_id
+    gid = str(get_peer_id(entity))
+    name = (getattr(entity, "title", None) or "Telegram group")[:150]
+    if gid in selected_groups:
+        await update.message.reply_text(f"Already monitoring {name}.")
+        return
+    await write_record({"kind": "group_config_add", "group_id": gid, "group": name, "date": datetime.now(timezone.utc).isoformat()})
+    selected_groups[gid] = name
+    await update.message.reply_text(f"Added: {name}\nOnly new messages from this group will now be collected. Use /sync 1 to import recent history.")
+
+
+async def removegroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /removegroup GROUP_ID")
+        return
+    value = " ".join(context.args).strip()
+    entity = await resolve_group_argument(value)
+    from telethon.utils import get_peer_id
+    gid = str(get_peer_id(entity)) if entity else value
+    if gid not in selected_groups:
+        await update.message.reply_text("That group is not being monitored. Use /mygroups.")
+        return
+    name = selected_groups[gid]
+    await write_record({"kind": "group_config_remove", "group_id": gid, "group": name, "date": datetime.now(timezone.utc).isoformat()})
+    selected_groups.pop(gid, None)
+    await update.message.reply_text(f"Removed: {name}. New messages will no longer be collected.")
+
+
+async def mygroups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        return
+    if not selected_groups:
+        await update.message.reply_text("No monitored groups. Use /groups, then /addgroup GROUP_ID.")
+        return
+    lines = [f"• {name} (ID: {gid})" for gid, name in selected_groups.items()]
+    await reply_long(update.message, "Currently monitored groups:\n\n" + "\n".join(lines))
+
+
 def record_local_date(record):
     try:
         dt = datetime.fromisoformat(record["date"])
@@ -273,6 +369,8 @@ def choose_relevant_records(records, question, max_items=65):
     pool = []
     for rec in records:
         if rec.get("kind") != "group_message":
+            continue
+        if str(rec.get("group_id", "")) not in selected_groups:
             continue
         d = record_local_date(rec)
         if wants_today and d != today:
@@ -387,17 +485,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Hey! I'm your Telegram Group Intelligence assistant.\n\n"
         "Ask me naturally, for example:\n"
-        "• What happened in my groups today?\n"
+        "• What happened in my selected groups today?\n"
         "• Find AWS discussions from yesterday.\n"
-        "• Did anyone share an internship?\n"
-        "• Explain the most useful technical message.\n\n"
+        "• Did anyone share an internship?\n\n"
         "Commands:\n"
-        "/groups - list groups visible to your account\n"
-        "/sync 1 - import the last 1 day of group history\n"
-        "/sync 7 - import the last 7 days (more messages)\n"
+        "/groups - list groups your account can access\n"
+        "/addgroup GROUP_ID - monitor a group\n"
+        "/mygroups - list monitored groups\n"
+        "/removegroup GROUP_ID - stop monitoring a group\n"
+        "/sync 1 - import 1 day of history from selected groups\n"
         "/status - check the system\n"
         "/help - show help\n\n"
-        "I collect new group messages while this Render service is running."
+        "Only selected groups are collected and used for answers."
     )
 
 
@@ -426,8 +525,14 @@ async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not lines:
         await update.message.reply_text("I couldn't find any groups.")
         return
-    text = "Groups visible to your personal Telegram account:\n\n" + "\n".join(lines[:100])
-    await reply_long(update.message, text)
+    from telethon.utils import get_peer_id
+    marked = []
+    async for dialog in telethon_client.iter_dialogs():
+        if dialog.is_group:
+            gid = str(get_peer_id(dialog.entity))
+            prefix = "★ " if gid in selected_groups else ""
+            marked.append(f"{prefix}{dialog.name} (ID: {gid})")
+    await reply_long(update.message, "Groups visible to your account (★ = monitored):\n\n" + "\n".join(marked[:100]) + "\n\nAdd with /addgroup GROUP_ID.")
 
 
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -442,8 +547,7 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     await update.message.reply_text(
-        f"Starting history import for the last {days} day(s). "
-        "This may take a while for large groups."
+        f"Starting history import for the last {days} day(s) from {len(selected_groups)} selected group(s)."
     )
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     saved = 0
@@ -451,10 +555,15 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     skipped = 0
 
     try:
+        if not selected_groups:
+            await update.message.reply_text("No groups selected. Use /groups, then /addgroup GROUP_ID.")
+            return
         async for dialog in telethon_client.iter_dialogs():
             if not dialog.is_group:
                 continue
-            if getattr(dialog.entity, "id", None) == getattr(storage_entity, "id", None):
+            from telethon.utils import get_peer_id
+            dialog_group_id = str(get_peer_id(dialog.entity))
+            if dialog_group_id not in selected_groups:
                 continue
             per_group = 0
             try:
@@ -477,8 +586,8 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     record = {
                         "kind": "group_message",
-                        "key": f"{dialog.id}:{msg.id}",
-                        "group_id": str(dialog.id),
+                        "key": f"{dialog_group_id}:{msg.id}",
+                        "group_id": dialog_group_id,
                         "group": (dialog.name or "Telegram group")[:150],
                         "message_id": int(msg.id),
                         "sender_id": str(msg.sender_id or ""),
@@ -633,8 +742,9 @@ async def run_app():
     groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 
     await load_known_keys()
+    await load_selected_groups()
 
-    # Collect newly arriving messages from groups the signed-in account can access.
+    # Collect only messages from the selected-group allow-list.
     telethon_client.add_event_handler(collect_group_message, events.NewMessage(incoming=True))
 
     bot = Application.builder().token(BOT_TOKEN).build()
@@ -642,6 +752,9 @@ async def run_app():
     bot.add_handler(CommandHandler("help", help_command))
     bot.add_handler(CommandHandler("status", status_command))
     bot.add_handler(CommandHandler("groups", groups_command))
+    bot.add_handler(CommandHandler("addgroup", addgroup_command))
+    bot.add_handler(CommandHandler("removegroup", removegroup_command))
+    bot.add_handler(CommandHandler("mygroups", mygroups_command))
     bot.add_handler(CommandHandler("sync", sync_command))
     bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message))
 
