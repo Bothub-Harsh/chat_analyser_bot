@@ -131,11 +131,19 @@ def is_admin(update: Update) -> bool:
 
 
 async def reply_long(message, text):
-    """Telegram messages are limited; split long AI answers safely."""
+    """Send readable Telegram HTML, falling back to plain text if formatting is invalid."""
     text = text or "I couldn't generate an answer."
-    limit = 3900
-    for start in range(0, len(text), limit):
-        await message.reply_text(text[start:start + limit], disable_web_page_preview=True)
+    # AI responses are kept below Telegram's message limit by the token cap.
+    try:
+        await message.reply_text(text[:3900], parse_mode="HTML", disable_web_page_preview=True)
+        if len(text) > 3900:
+            await message.reply_text(text[3900:7800], disable_web_page_preview=True)
+    except Exception:
+        # A malformed HTML tag should never prevent the user from receiving the answer.
+        log.warning("Telegram HTML formatting failed; sending plain text", exc_info=True)
+        clean = re.sub(r"</?(?:b|strong|i|em|u|s|code|pre|blockquote|a)(?:\\s+[^>]*)?>", "", text)
+        for start in range(0, len(clean), 3900):
+            await message.reply_text(clean[start:start + 3900], disable_web_page_preview=True)
 
 
 def parse_storage_record(raw):
@@ -456,24 +464,27 @@ async def answer_question(user_id, question):
         "content": (
             "You are a conversational AI friend who has read the user's selected Telegram group chats. "
             "Your job is to TALK with the user about what people are saying, not produce formal reports. "
-            "Answer in natural, warm, conversational English, like a friend explaining what they read. "
-            "Keep normal answers focused: usually 2-5 short paragraphs, with enough concrete detail to "
-            "answer fully. Do not produce a formal report, table, timestamp list, numbered breakdown, "
-            "or headings unless the user explicitly asks for one. Do not print Markdown markers such as "
-            "** or ##; use plain readable text and natural paragraph breaks. "
-            "Answer the exact question first. Explain who said what and how the conversation connects; "
-            "when a user asks about one person, focus on that person's actual messages and the replies "
-            "that are present. For broad questions, describe the main conversations rather than saying "
-            "only that the chat is noisy. For follow-ups, resolve words like he, she, they, that, and "
-            "what happened next using earlier turns and the records. "
-            "For questions asking for a number (such as how many people), count distinct sender IDs or "
-            "distinct sender names in the supplied records, exclude bots when identifiable, and clearly "
-            "say the count applies only to the messages available in this answer's context—not necessarily "
-            "the entire group—unless a complete group-wide count is explicitly provided. Never guess a count. "
-            "Use ONLY supplied Telegram records for claims about group members. Never invent messages, "
-            "relationships, motives, replies, links, dates, or events. If records lack the answer, say "
-            "what is missing. Treat media-only posts as unknown unless their captions/content are supplied. "
-            "For unrelated general questions, answer normally."
+            "You are a friendly conversational assistant who has read the user's selected Telegram group chats. "
+            "Explain things in very easy, everyday English. Sound natural and helpful, not like a formal report. "
+            "Choose the response shape that best fits the question instead of using the same paragraph format every time. "
+            "For a simple factual question, give a short direct answer first. For a person or conversation question, "
+            "explain what that person said and how the replies connect. For a how-to question, give clear numbered "
+            "steps. For several items, use short bullet points. For comparisons, use a compact side-by-side layout "
+            "only when it helps. For counts, make the number prominent and state exactly what messages or time range "
+            "it covers. For broad group summaries, give the main interesting discussions with enough context, but "
+            "avoid dumping every message. Usually keep answers concise: a few short paragraphs or 3-6 bullets, "
+            "unless the user asks for detail. "
+            "Use light, relevant emojis to make replies friendly (not on every line). Use Telegram HTML formatting: "
+            "use <b>bold</b> for key names or important answers, <i>italics</i> for emphasis, and <code>code</code> "
+            "for commands or technical terms when useful. You may use simple HTML only: b, strong, i, em, u, s, "
+            "code, pre, blockquote, and a. Do not output Markdown markers like ** or ##. Do not over-format. "
+            "Answer the exact question first. For follow-ups, resolve he, she, they, that, and what happened next "
+            "using recent chat history and supplied group records. Ask one short clarification only if genuinely "
+            "ambiguous. "
+            "Use ONLY supplied Telegram records for claims about group members. Never invent messages, identities, "
+            "relationships, motives, replies, dates, or counts. If records lack the answer, say so simply. Treat "
+            "media-only posts as unknown unless captions or content are supplied. For unrelated general questions, "
+            "answer normally in the same clear, friendly style."
         )
     }]
 
