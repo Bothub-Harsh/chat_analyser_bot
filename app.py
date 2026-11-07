@@ -457,17 +457,27 @@ def choose_relevant_records(records, question, max_items=65):
     return selected
 
 
-def build_context(records):
+def build_context(records, max_chars=10000):
+    """Build a strict-size context so Groq requests stay below token limits."""
     chunks = []
-    for r in records:
+    used = 0
+    # Newest records are most useful; walk backwards, then restore chronological order.
+    for r in reversed(records):
         line = (
             f"[{r.get('date','')}] Group: {r.get('group','?')} | "
             f"Sender: {r.get('sender','?')} | Sender Telegram user ID: {r.get('sender_id') or 'not available'} | "
             f"Message ID: {r.get('message_id') or 'not available'} | Message: {r.get('text','')}"
         )
-        chunks.append(line[:1800])
-    context = "\n".join(chunks)
-    return context[-26000:]
+        line = line[:650]
+        if used + len(line) + 1 > max_chars:
+            remaining = max_chars - used
+            if remaining > 120:
+                chunks.append(line[:remaining])
+            break
+        chunks.append(line)
+        used += len(line) + 1
+    chunks.reverse()
+    return "\n".join(chunks)
 
 
 async def get_chat_history(user_id, limit=8):
@@ -498,8 +508,8 @@ async def answer_question(user_id, question):
         if item.get("role") == "user"
     ][-3:]
     retrieval_question = " ".join(previous_user_questions + [question])
-    relevant = choose_relevant_records(records, retrieval_question, max_items=100)
-    context = build_context(relevant)
+    relevant = choose_relevant_records(records, retrieval_question, max_items=45)
+    context = build_context(relevant, max_chars=10000)
     messages = [{
         "role": "system",
         "content": (
@@ -536,10 +546,11 @@ async def answer_question(user_id, question):
         )
     }]
 
-    for item in history:
+    # Keep only a tiny recent dialogue window; long chat history wastes TPM.
+    for item in history[-4:]:
         role = item.get("role")
         if role in ("user", "assistant"):
-            messages.append({"role": role, "content": item.get("text", "")[:1800]})
+            messages.append({"role": role, "content": item.get("text", "")[:350]})
 
     messages.append({
         "role": "user",
@@ -550,13 +561,34 @@ async def answer_question(user_id, question):
         )
     })
 
-    completion = await groq_client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=messages,
-        temperature=0.3,
-        max_tokens=1400,
-    )
-    answer = completion.choices[0].message.content.strip()
+    try:
+        completion = await groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=800,
+        )
+    except Exception as first_error:
+        error_text = str(first_error).lower()
+        # If provider still estimates an oversized request, retry once with a much smaller prompt.
+        if "413" not in error_text and "request too large" not in error_text and "tokens per minute" not in error_text:
+            raise
+        log.warning("Groq token limit reached; retrying with a compact context")
+        compact_context = build_context(relevant[-12:], max_chars=3000)
+        compact_messages = [
+            messages[0],
+            {
+                "role": "user",
+                "content": f"Question: {question}\n\nSelected group messages:\n{compact_context}",
+            },
+        ]
+        completion = await groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=compact_messages,
+            temperature=0.2,
+            max_tokens=500,
+        )
+    answer = (completion.choices[0].message.content or "").strip() or "I couldn't find enough information in the selected group's messages to answer that."
 
     # Make every unambiguous sender name in the answer clickable using the
     # exact numeric Telegram ID saved with the selected group's messages.
