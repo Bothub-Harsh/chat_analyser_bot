@@ -114,6 +114,7 @@ storage_entity = None
 groq_client = None
 known_keys = set()
 selected_groups = {}
+bot_paused = False
 storage_lock = asyncio.Lock()
 
 
@@ -189,6 +190,8 @@ async def load_known_keys():
 
 async def collect_group_message(event):
     try:
+        if bot_paused:
+            return
         if not event.is_group or not event.message:
             return
         chat = await event.get_chat()
@@ -498,10 +501,13 @@ async def answer_question(user_id, question):
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_paused
     if not is_admin(update):
         await update.message.reply_text("Sorry, this is a private personal assistant.")
         return
+    bot_paused = False
     await update.message.reply_text(
+        "Bot resumed! Group monitoring and AI answers are enabled.\n\n"
         "Hey! I'm your Telegram Group Intelligence assistant.\n\n"
         "Ask me naturally, for example:\n"
         "• What happened in my selected groups today?\n"
@@ -513,6 +519,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/mygroups - list monitored groups\n"
         "/removegroup GROUP_ID - stop monitoring a group\n"
         "/sync 1 - import 1 day of history from selected groups\n"
+        "/stop - pause collection and AI replies\n"
+        "/start - resume collection and AI replies\n"
         "/status - check the system\n"
         "/help - show help\n\n"
         "Only selected groups are collected and used for answers."
@@ -523,12 +531,24 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start_command(update, context)
 
 
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_paused
+    if not is_admin(update):
+        return
+    bot_paused = True
+    await update.message.reply_text(
+        "Bot paused. I will stop collecting new group messages and answering AI questions. "
+        "Send /start whenever you want to resume."
+    )
+
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
     count = len(known_keys)
+    state = "PAUSED" if bot_paused else "RUNNING"
     await update.message.reply_text(
-        f"System is running.\nStored message keys loaded: {count}\n"
+        f"System status: {state}.\nStored message keys loaded: {count}\n"
         f"Storage: Telegram channel\nAI: Groq ({GROQ_MODEL})"
     )
 
@@ -556,6 +576,9 @@ async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
+        return
+    if bot_paused:
+        await update.message.reply_text("Bot is paused. Send /start before running /sync.")
         return
     days = 1
     if context.args:
@@ -587,6 +610,9 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             per_group = 0
             try:
                 async for msg in telethon_client.iter_messages(dialog.entity, limit=MAX_SYNC_PER_GROUP):
+                    if bot_paused:
+                        await update.message.reply_text("Sync stopped because the bot was paused.")
+                        return
                     if msg.date and msg.date.replace(tzinfo=timezone.utc) < cutoff:
                         break
                     scanned += 1
@@ -639,6 +665,9 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         await update.message.reply_text("This is a private bot.")
+        return
+    if bot_paused:
+        await update.message.reply_text("I'm paused right now. Send /start to resume me.")
         return
     question = (update.message.text or "").strip()
     if not question:
@@ -770,6 +799,7 @@ async def run_app():
 
     bot = Application.builder().token(BOT_TOKEN).concurrent_updates(4).build()
     bot.add_handler(CommandHandler("start", start_command))
+    bot.add_handler(CommandHandler("stop", stop_command))
     bot.add_handler(CommandHandler("help", help_command))
     bot.add_handler(CommandHandler("status", status_command))
     bot.add_handler(CommandHandler("groups", groups_command))
